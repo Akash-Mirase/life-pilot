@@ -52,30 +52,47 @@ export default function Dashboard () {
   const [aiSuggestion, setAiSuggestion] = useState('')
   const [suggestionLoading, setSuggestionLoading] = useState(false)
   const [chartData, setChartData] = useState([])
+  const [analyticsError, setAnalyticsError] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState(null)
 
+  // Initial load + live polling so the dashboard reflects real backend state
+  // without requiring a manual refresh. Pauses while the tab is hidden.
   useEffect(() => {
-    fetchTasks()
-    loadAnalytics()
+    const loadAll = () => {
+      fetchTasks()
+      loadAnalytics()
+    }
+    loadAll()
     loadAiSuggestion()
+
+    const POLL_MS = 15000
+    const interval = setInterval(() => {
+      if (document.visibilityState === 'visible') loadAll()
+    }, POLL_MS)
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') loadAll()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   const loadAnalytics = async () => {
     try {
       const { data } = await api.get('/analytics/summary')
       setAnalytics(data)
-      setChartData(data.weeklyData || generateMockChart())
+      setChartData(data.weeklyData || [])
+      setAnalyticsError(false)
+      setLastUpdated(new Date())
     } catch {
-      setChartData(generateMockChart())
+      // Be honest when the backend/DB isn't reachable instead of showing
+      // fabricated numbers — judges (and you) should be able to tell.
+      setAnalyticsError(true)
     }
-  }
-
-  const generateMockChart = () => {
-    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-    return days.map(d => ({
-      day: d,
-      completed: Math.floor(Math.random() * 8) + 1,
-      focus: Math.floor(Math.random() * 5) + 1
-    }))
   }
 
   const loadAiSuggestion = async () => {
@@ -135,13 +152,32 @@ export default function Dashboard () {
             {format(new Date(), 'EEEE, MMMM d, yyyy')}
           </p>
         </div>
-        <Link
-          to='/ai-planner'
-          className='gradient-btn text-white text-sm font-medium px-4 py-2.5 rounded-xl flex items-center gap-2'
-        >
-          <RiRobot2Line /> Ask AI
-        </Link>
+        <div className='flex items-center gap-3'>
+          {!analyticsError && lastUpdated && (
+            <span className='hidden sm:flex items-center gap-1.5 text-xs text-slate-500'>
+              <span className='w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse' />
+              Live · updated {format(lastUpdated, 'h:mm:ss a')}
+            </span>
+          )}
+          <Link
+            to='/ai-planner'
+            className='gradient-btn text-white text-sm font-medium px-4 py-2.5 rounded-xl flex items-center gap-2'
+          >
+            <RiRobot2Line /> Ask AI
+          </Link>
+        </div>
       </div>
+
+      {analyticsError && (
+        <div
+          className='flex items-center gap-2 text-sm text-red-300 px-4 py-3 rounded-xl'
+          style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)' }}
+        >
+          <RiAlertLine className='flex-shrink-0' />
+          Can't reach the backend/database right now, so analytics aren't live. Check your
+          server is running and MONGODB_URI is set correctly.
+        </div>
+      )}
 
       {/* Stats */}
       <motion.div
@@ -329,12 +365,12 @@ export default function Dashboard () {
                 },
                 {
                   label: 'On-Time Rate',
-                  value: analytics?.onTimeRate || 72,
+                  value: analytics?.onTimeRate,
                   color: 'cyan'
                 },
                 {
                   label: 'Streak',
-                  value: analytics?.streak || 5,
+                  value: analytics?.streak,
                   color: 'green',
                   suffix: ' days'
                 }

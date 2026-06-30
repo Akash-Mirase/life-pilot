@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { formatDistanceToNow } from 'date-fns'
 import { Card, Button, Badge } from '../components/ui/index'
 import { useAuth } from '../contexts/AuthContext.jsx'
 import { useTasks } from '../contexts/TaskContext'
@@ -205,48 +206,79 @@ export function Voice () {
 }
 
 // ── Notifications Page ───────────────────────────────────────────────────────
+// Notifications are derived from real task data (TaskContext) instead of a
+// hardcoded fake list. No backend "notifications" endpoint exists yet, so
+// this builds them client-side from tasks that are already loaded — overdue,
+// due soon, and recently completed — which keeps the data honest and live.
 export function Notifications () {
-  const { tasks } = useTasks ? useTasks() : { tasks: [] }
-  const [notifications, setNotifications] = useState([
-    {
-      id: 1,
-      type: 'warning',
-      title: 'Deadline approaching',
-      message: 'Review PR #247 is due in 2 hours',
-      time: '2h ago',
-      read: false
-    },
-    {
-      id: 2,
-      type: 'ai',
-      title: 'AI Suggestion',
-      message:
-        'Based on your pattern, you should start the design review now for best results.',
-      time: '4h ago',
-      read: false
-    },
-    {
-      id: 3,
-      type: 'success',
-      title: 'Daily goal achieved!',
-      message:
-        "You've completed 8 tasks today — your personal best this month!",
-      time: '6h ago',
-      read: true
-    },
-    {
-      id: 4,
-      type: 'info',
-      title: 'Weekly report ready',
-      message: 'Your productivity report for this week is ready to view.',
-      time: '1d ago',
-      read: true
-    }
-  ])
+  const { tasks, fetchTasks, loading } = useTasks()
+  const [readIds, setReadIds] = useState(() => new Set())
 
-  const markAll = () =>
-    setNotifications(p => p.map(n => ({ ...n, read: true })))
-  const unread = notifications.filter(n => !n.read).length
+  useEffect(() => {
+    fetchTasks()
+  }, [])
+
+  const notifications = (() => {
+    if (!tasks || tasks.length === 0) return []
+
+    const now = new Date()
+    const items = []
+
+    for (const t of tasks) {
+      const id = t._id || t.id
+      const deadline = t.deadline ? new Date(t.deadline) : null
+
+      if (!t.completed && deadline && deadline < now) {
+        items.push({
+          id: `overdue-${id}`,
+          type: 'warning',
+          title: 'Overdue',
+          message: `"${t.title}" was due ${formatDistanceToNow(deadline, { addSuffix: true })}`,
+          time: deadline
+        })
+      } else if (
+        !t.completed &&
+        deadline &&
+        deadline.getTime() - now.getTime() < 24 * 60 * 60 * 1000
+      ) {
+        items.push({
+          id: `due-soon-${id}`,
+          type: 'warning',
+          title: 'Deadline approaching',
+          message: `"${t.title}" is due ${formatDistanceToNow(deadline, { addSuffix: true })}`,
+          time: deadline
+        })
+      }
+
+      if (t.completed && t.completedAt) {
+        const completedAt = new Date(t.completedAt)
+        if (now.getTime() - completedAt.getTime() < 24 * 60 * 60 * 1000) {
+          items.push({
+            id: `done-${id}`,
+            type: 'success',
+            title: 'Task completed',
+            message: `You completed "${t.title}"`,
+            time: completedAt
+          })
+        }
+      }
+
+      if (!t.completed && t.priority === 'critical') {
+        items.push({
+          id: `critical-${id}`,
+          type: 'ai',
+          title: 'Critical priority',
+          message: `"${t.title}" is marked critical and still open`,
+          time: new Date(t.updatedAt || t.createdAt || now)
+        })
+      }
+    }
+
+    return items.sort((a, b) => b.time - a.time)
+  })()
+
+  const markAll = () => setReadIds(new Set(notifications.map(n => n.id)))
+  const unread = notifications.filter(n => !readIds.has(n.id)).length
 
   const typeStyles = {
     warning: {
@@ -281,7 +313,11 @@ export function Notifications () {
           >
             Notifications
           </h1>
-          <p className='text-slate-400 text-sm'>{unread} unread</p>
+          <p className='text-slate-400 text-sm'>
+            {loading
+              ? 'Loading...'
+              : `${unread} unread`}
+          </p>
         </div>
         {unread > 0 && (
           <Button variant='ghost' size='sm' onClick={markAll}>
@@ -290,27 +326,33 @@ export function Notifications () {
         )}
       </div>
 
+      {!loading && notifications.length === 0 && (
+        <Card>
+          <div className='text-center py-8 text-slate-500 text-sm'>
+            <RiNotification3Line className='text-2xl mx-auto mb-2 opacity-50' />
+            You're all caught up — no overdue, upcoming, or critical tasks right now.
+          </div>
+        </Card>
+      )}
+
       <div className='space-y-3'>
         {notifications.map(n => {
           const style = typeStyles[n.type]
+          const read = readIds.has(n.id)
           return (
             <motion.div
               key={n.id}
               layout
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              onClick={() =>
-                setNotifications(p =>
-                  p.map(x => (x.id === n.id ? { ...x, read: true } : x))
-                )
-              }
+              onClick={() => setReadIds(p => new Set(p).add(n.id))}
               className={`p-4 rounded-xl cursor-pointer transition-all ${
-                !n.read ? 'glass-hover' : 'opacity-60'
+                !read ? 'glass-hover' : 'opacity-60'
               }`}
               style={{
-                background: n.read ? 'rgba(255,255,255,0.03)' : style.bg,
+                background: read ? 'rgba(255,255,255,0.03)' : style.bg,
                 border: `1px solid ${
-                  n.read ? 'rgba(255,255,255,0.07)' : style.border
+                  read ? 'rgba(255,255,255,0.07)' : style.border
                 }`
               }}
             >
@@ -321,12 +363,14 @@ export function Notifications () {
                     <p className='text-sm font-medium text-slate-200'>
                       {n.title}
                     </p>
-                    {!n.read && (
+                    {!read && (
                       <div className='w-1.5 h-1.5 rounded-full bg-purple-400 flex-shrink-0' />
                     )}
                   </div>
                   <p className='text-xs text-slate-400 mt-0.5'>{n.message}</p>
-                  <p className='text-xs text-slate-600 mt-1'>{n.time}</p>
+                  <p className='text-xs text-slate-600 mt-1'>
+                    {formatDistanceToNow(n.time, { addSuffix: true })}
+                  </p>
                 </div>
               </div>
             </motion.div>
